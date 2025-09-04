@@ -1,6 +1,6 @@
 // --- UTILITIES & ANALYSIS FUNCTIONS ---
 
-let customYaraRules = null;
+let customYaraRules = {}; // 커스텀 룰을 저장하는 객체 (누적)
 
 // [업데이트] 내장 YARA 룰 원본 (수정 용이성을 위해 단순 문자열 배열 유지)
 const rawInternalYaraRules = {
@@ -174,7 +174,7 @@ function searchForBytes(buffer, sequence) {
 
 // YARA 스캔 로직 (바이너리/텍스트 동시 지원)
 function yaraScan(textContent, fileBuffer) {
-    const rulesToUse = customYaraRules || internalYaraRules;
+    const rulesToUse = { ...internalYaraRules, ...customYaraRules };
     const fileBytes = new Uint8Array(fileBuffer);
     const matches = [];
 
@@ -182,82 +182,96 @@ function yaraScan(textContent, fileBuffer) {
         const rule = rulesToUse[ruleName];
         let matchedStrings = [];
 
-        rule.strings.forEach(strObj => {
-            let isMatch = false;
-            if (strObj.type === 'hex') {
-                isMatch = searchForBytes(fileBytes, strObj.value);
-            } else { // type === 'text'
-                if (ruleName.toLowerCase().includes('pe')) {
-                    isMatch = textContent.includes(strObj.value);
-                } else {
-                    isMatch = textContent.toLowerCase().includes(strObj.value.toLowerCase());
+        // 스캐너가 처리할 수 있는 문자열이 있는 규칙만 검사
+        if (rule.strings && rule.strings.length > 0) {
+            rule.strings.forEach(strObj => {
+                let isMatch = false;
+                if (strObj.type === 'hex') {
+                    isMatch = searchForBytes(fileBytes, strObj.value);
+                } else { // type === 'text'
+                    if (ruleName.toLowerCase().includes('pe')) {
+                        isMatch = textContent.includes(strObj.value);
+                    } else {
+                        isMatch = textContent.toLowerCase().includes(strObj.value.toLowerCase());
+                    }
+                }
+
+                if (isMatch) {
+                    matchedStrings.push({
+                        identifier: strObj.identifier,
+                        data: strObj.display
+                    });
+                }
+            });
+
+            let conditionMet = false;
+            if (rule.condition === 'any') {
+                conditionMet = matchedStrings.length > 0;
+            } else if (rule.condition === 'all') {
+                conditionMet = matchedStrings.length === rule.strings.length;
+            } else {
+                const numCondition = parseInt(rule.condition);
+                if (!isNaN(numCondition)) {
+                    conditionMet = matchedStrings.length >= numCondition;
                 }
             }
 
-            if (isMatch) {
-                matchedStrings.push({
-                    identifier: strObj.identifier,
-                    data: strObj.display
+            if (conditionMet) {
+                matches.push({
+                    rule: ruleName,
+                    meta: { description: rule.description, author: rule.author },
+                    strings: matchedStrings
                 });
             }
-        });
-
-        let conditionMet = false;
-        if (rule.condition === 'any') {
-            conditionMet = matchedStrings.length > 0;
-        } else if (rule.condition === 'all') {
-            conditionMet = matchedStrings.length === rule.strings.length;
-        } else {
-            const numCondition = parseInt(rule.condition);
-            if (!isNaN(numCondition)) {
-                conditionMet = matchedStrings.length >= numCondition;
-            }
-        }
-
-        if (conditionMet) {
-            matches.push({
-                rule: ruleName,
-                meta: { description: rule.description, author: rule.author },
-                strings: matchedStrings
-            });
         }
     }
     return matches;
 }
 
 
-// YARA 룰 파서 (타입, 원본 문자열 저장)
+// [수정] YARA 룰 파서 (import, 주석 처리, 구문 안정성 강화)
 function parseYaraRule(ruleContent) {
     const rules = {};
-    const ruleRegex = /rule\s+([\w_]+)\s*\{([\s\S]*?)\}/g;
+    // [FIX] 1. import 문 제거
+    let cleanContent = ruleContent.replace(/import\s+"[^"]+"/g, "");
+    // [FIX] 2. 주석 제거 (블록 주석, 라인 주석 모두)
+    cleanContent = cleanContent.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\r\n]*/g, "");
+
+    // global, private 키워드를 허용하도록 정규식 개선
+    const ruleRegex = /(?:global\s+|private\s+)?rule\s+([\w_]+)\s*\{([\s\S]*?)\}/g;
     let match;
 
-    while ((match = ruleRegex.exec(ruleContent)) !== null) {
+    while ((match = ruleRegex.exec(cleanContent)) !== null) {
         const ruleName = match[1];
-        const ruleBody = match[2];
+        let ruleBody = match[2];
 
-        const metaDescMatch = ruleBody.match(/description\s*=\s*"([^"]*)"/);
+        // 작은따옴표, 큰따옴표 모두 허용
+        const metaDescMatch = ruleBody.match(/description\s*=\s*["']([^"']*)["']/);
         const stringsMatch = ruleBody.match(/strings:\s*([\s\S]*?)condition:/);
-        const conditionMatch = ruleBody.match(/condition:\s*([\s\S]*?)\s*\}/);
-
-        if (stringsMatch && conditionMatch) {
+        const conditionMatch = ruleBody.match(/condition:\s*([\s\S]*?)\s*$/);
+        
+        // condition 블록만 있어도 유효한 룰로 인식
+        if (conditionMatch) {
             const strings = [];
-            const stringRegex = /(\$[\w\d_]+)\s*=\s*(?:("([^"]*)")|\{\s*([A-Fa-f0-9\s]+)\s*\})(?:\s*nocase)?/g;
-            let stringMatch;
-            while ((stringMatch = stringRegex.exec(stringsMatch[1])) !== null) {
-                const identifier = stringMatch[1];
-                const textValue = stringMatch[3];
-                const hexValue = stringMatch[4];
+            if (stringsMatch) {
+                // 작은따옴표, 큰따옴표 모두 허용하도록 정규식 개선
+                const stringRegex = /(\$[\w\d_]+)\s*=\s*(?:(["'])(.*?)\2|\{\s*([A-Fa-f0-9\s]+)\s*\})(?:\s*nocase)?/g;
+                let stringMatch;
+                while ((stringMatch = stringRegex.exec(stringsMatch[1])) !== null) {
+                    const identifier = stringMatch[1];
+                    const textValue = stringMatch[3]; // 그룹 인덱스 변경됨
+                    const hexValue = stringMatch[4];  // 그룹 인덱스 변경됨
 
-                if (textValue !== undefined) {
-                    strings.push({ type: 'text', value: textValue, identifier: identifier, display: `"${textValue}"` });
-                } else if (hexValue) {
-                    const hexString = hexValue.replace(/\s/g, '');
-                    const bytes = new Uint8Array(hexString.length / 2);
-                    for (let i = 0; i < hexString.length; i += 2) {
-                        bytes[i / 2] = parseInt(hexString.substr(i, 2), 16);
+                    if (textValue !== undefined) {
+                        strings.push({ type: 'text', value: textValue, identifier: identifier, display: `"${textValue}"` });
+                    } else if (hexValue) {
+                        const hexString = hexValue.replace(/\s/g, '');
+                        const bytes = new Uint8Array(hexString.length / 2);
+                        for (let i = 0; i < hexString.length; i += 2) {
+                            bytes[i / 2] = parseInt(hexString.substr(i, 2), 16);
+                        }
+                        strings.push({ type: 'hex', value: bytes, identifier: identifier, display: `{ ${hexValue.trim()} }` });
                     }
-                    strings.push({ type: 'hex', value: bytes, identifier: identifier, display: `{ ${hexValue.trim()} }` });
                 }
             }
 
@@ -269,19 +283,18 @@ function parseYaraRule(ruleContent) {
                  const numMatch = conditionStr.match(/(\d+)\s+of/);
                 if (numMatch) condition = numMatch[1];
             }
-
-            if (strings.length > 0) {
-                rules[ruleName] = {
-                    description: metaDescMatch ? metaDescMatch[1] : "No description",
-                    author: "Custom",
-                    strings: strings,
-                    condition: condition
-                };
-            }
+            
+            rules[ruleName] = {
+                description: metaDescMatch ? metaDescMatch[1] : "No description",
+                author: "Custom",
+                strings: strings,
+                condition: condition
+            };
         }
     }
     return Object.keys(rules).length > 0 ? rules : null;
 }
+
 
 // --- UI 렌더링 함수 ---
 
@@ -401,6 +414,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('scan-btn-yara').addEventListener('click', handleYaraScan);
 
+    // [신규] YARA 룰셋 초기화 버튼 이벤트 리스너
+    document.getElementById('reset-yara-rules').addEventListener('click', () => {
+        customYaraRules = {}; // 추가된 모든 커스텀 룰 삭제
+        const filenameDisplay = document.getElementById('filename-yar');
+        const yaraStatus = document.getElementById('yara-source-name');
+        
+        // NEW: Hide custom rule display
+        const customRuleDisplay = document.getElementById('custom-rule-display');
+        const customRuleContent = document.getElementById('custom-rule-content');
+        customRuleDisplay.classList.add('hidden');
+        customRuleContent.textContent = '';
+        
+        filenameDisplay.textContent = '기본 내장 룰셋으로 초기화되었습니다.';
+        yaraStatus.textContent = '기본 내장 룰';
+        yaraStatus.classList.add('text-blue-400');
+        yaraStatus.classList.remove('text-green-400');
+        
+        updateYaraAccordion();
+    });
+
     updateYaraAccordion();
     lucide.createIcons();
 });
@@ -485,28 +518,46 @@ async function handleFileAnalysis(file, fileBuffer, resultEl) {
     lucide.createIcons();
 }
 
+// [수정] YARA 룰을 교체하는 대신 추가(병합)하고, 지원되지 않는 룰에 대한 안내 추가
 function handleYaraRuleFile(file, fileBuffer) {
     const filenameDisplay = document.getElementById('filename-yar');
     const yaraStatus = document.getElementById('yara-source-name');
-    filenameDisplay.textContent = `룰 파일 '${file.name}' 로딩 중...`;
-    const textContent = new TextDecoder("utf-8").decode(fileBuffer);
+
+    // NEW: Get display elements
+    const customRuleDisplay = document.getElementById('custom-rule-display');
+    const customRuleContent = document.getElementById('custom-rule-content');
+
+    filenameDisplay.textContent = `룰 파일 '${file.name}' 처리 중...`;
+    // [FIX] BOM (Byte Order Mark) 등 인코딩 문제를 방지하기 위해 ignoreBOM 옵션 추가
+    const textContent = new TextDecoder("utf-8", { ignoreBOM: true }).decode(fileBuffer);
+    
+    // [NEW] 1. Display the raw content first for user feedback
+    customRuleContent.textContent = textContent;
+    customRuleDisplay.classList.remove('hidden');
+
     const parsedRules = parseYaraRule(textContent);
 
     if (parsedRules) {
-        customYaraRules = parsedRules;
-        filenameDisplay.textContent = `'${file.name}' 룰셋이 적용되었습니다.`;
-        yaraStatus.textContent = `커스텀 룰 (${file.name})`;
+        Object.assign(customYaraRules, parsedRules); // 기존 룰셋에 새로운 룰 병합
+        const totalAdded = Object.keys(parsedRules).length;
+        // 스캐너가 실제로 사용할 수 있는 (strings가 있는) 룰의 개수 확인
+        const scannableAdded = Object.values(parsedRules).filter(r => r.strings && r.strings.length > 0).length;
+
+        let message = `'${file.name}'에서 ${totalAdded}개의 룰을 인식했습니다.`;
+        if (totalAdded > scannableAdded) {
+            message += ` 이 중 ${scannableAdded}개가 현재 스캐너(문자열 기반)에서 지원됩니다.`;
+        }
+
+        filenameDisplay.textContent = message;
+        yaraStatus.textContent = '기본 룰 + 커스텀 룰';
         yaraStatus.classList.remove('text-blue-400');
         yaraStatus.classList.add('text-green-400');
     } else {
-        customYaraRules = null; // 실패 시 내장 룰로 복귀
-        filenameDisplay.textContent = `'${file.name}'에서 유효한 룰을 찾지 못했습니다. 내장 룰을 사용합니다.`;
-        yaraStatus.textContent = '기본 내장 룰 (커스텀 룰 로드 실패)';
-        yaraStatus.classList.add('text-blue-400');
-        yaraStatus.classList.remove('text-green-400');
+        filenameDisplay.textContent = `'${file.name}'의 내용은 표시되었으나, 스캐너가 지원하는 형식의 룰을 찾지 못했습니다.`;
     }
     updateYaraAccordion();
 }
+
 
 function handleYaraScan() {
     const fileInput = document.getElementById('file-yara-target');
@@ -542,10 +593,11 @@ function handleYaraScan() {
     reader.readAsArrayBuffer(file);
 }
 
+// [수정] 항상 병합된 룰셋을 보여주도록 수정
 function updateYaraAccordion() {
     const yaraAccordion = document.getElementById('yara-rules-accordion');
     yaraAccordion.innerHTML = '';
-    const rulesToDisplay = customYaraRules || internalYaraRules;
+    const rulesToDisplay = { ...internalYaraRules, ...customYaraRules };
 
     Object.keys(rulesToDisplay).forEach(ruleName => {
         const rule = rulesToDisplay[ruleName];
@@ -559,7 +611,7 @@ function updateYaraAccordion() {
             <div class="expander-content px-4 pb-4 bg-gray-900/50">
                 <p class="text-sm text-gray-400 mb-2"><strong>설명:</strong> ${rule.description}</p>
                 <p class="text-sm text-gray-400 mb-2"><strong>탐지 문자열 (${rule.condition} 조건):</strong></p>
-                <div class="font-mono text-xs text-blue-300">${rule.strings.map(s => s.display).join(', ')}</div>
+                <div class="font-mono text-xs text-blue-300">${(rule.strings && rule.strings.length > 0) ? rule.strings.map(s => s.display).join(', ') : '표시할 문자열 없음 (예: 해시 전용 룰)'}</div>
             </div>`;
         yaraAccordion.appendChild(ruleElement);
     });
