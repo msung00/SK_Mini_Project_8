@@ -120,33 +120,51 @@
             <div id="view-yara" class="hidden">
                 <h2 class="text-2xl font-semibold mb-6 flex items-center"><i data-lucide="shield-alert" class="w-6 h-6 mr-3 text-red-400"></i>🚨 YARA 룰 스캔</h2>
                 
-                <div class="bg-gray-800 rounded-lg p-6 mb-6">
-                    <h3 class="text-lg font-bold mb-4 text-white">내장 YARA 룰셋</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- YARA Rule Source -->
+                    <div class="bg-gray-800 rounded-lg p-6">
+                        <h3 class="text-lg font-bold mb-4 text-white">룰셋 선택</h3>
+                        <div class="file-drop-zone border-2 border-dashed border-gray-600 rounded-lg p-6 text-center" id="drop-zone-yar">
+                            <label for="file-yar" class="file-input-label cursor-pointer">
+                                 <i data-lucide="file-lock-2" class="mx-auto h-12 w-12 text-gray-400"></i>
+                                 <p class="mt-2 text-gray-400">커스텀 YARA 룰 (.yar) 파일 업로드</p>
+                                 <input type="file" id="file-yar" class="hidden" accept=".yar, .yara">
+                            </label>
+                            <p id="filename-yar" class="mt-2 text-sm font-medium text-green-400"></p>
+                        </div>
+                        <div id="yara-status" class="mt-4 text-center text-sm p-2 rounded-md bg-gray-700">
+                            현재 적용 룰: <span id="yara-source-name" class="font-bold text-blue-400">기본 내장 룰</span>
+                        </div>
+                    </div>
+                    <!-- File to Scan -->
+                    <div class="bg-gray-800 rounded-lg p-6">
+                        <h3 class="text-lg font-bold mb-4 text-white">스캔 대상 파일</h3>
+                        <div class="file-drop-zone border-2 border-dashed border-gray-600 rounded-lg p-6 text-center" id="drop-zone-yara-target">
+                            <label for="file-yara-target" class="file-input-label cursor-pointer">
+                                 <i data-lucide="scan-line" class="mx-auto h-12 w-12 text-gray-400"></i>
+                                 <p class="mt-2 text-gray-400">스캔할 파일을 업로드하세요.</p>
+                                 <input type="file" id="file-yara-target" class="hidden">
+                            </label>
+                            <p id="filename-yara-target" class="mt-2 text-sm font-medium text-green-400"></p>
+                        </div>
+                        <button id="scan-btn-yara" class="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition flex items-center justify-center">
+                            <i data-lucide="play" class="w-5 h-5 mr-2"></i>스캔 실행
+                        </button>
+                    </div>
+                </div>
+
+                <div id="result-yara" class="mt-6"></div>
+
+                <div class="bg-gray-800 rounded-lg p-6 mt-6">
+                    <h3 class="text-lg font-bold mb-4 text-white">현재 적용된 YARA 룰셋 미리보기</h3>
                     <div id="yara-rules-accordion">
                         <!-- YARA rules will be dynamically inserted here -->
                     </div>
                 </div>
-
-                <div class="bg-gray-800 rounded-lg p-6 mb-6">
-                    <h3 class="text-lg font-bold mb-4 text-white">📤 스캔할 파일 업로드</h3>
-                    <div class="file-drop-zone border-2 border-dashed border-gray-600 rounded-lg p-6 text-center" id="drop-zone-yara">
-                        <label for="file-yara" class="file-input-label cursor-pointer">
-                             <i data-lucide="scan-line" class="mx-auto h-12 w-12 text-gray-400"></i>
-                             <p class="mt-2 text-gray-400">스캔할 파일을 업로드하세요.</p>
-                             <input type="file" id="file-yara" class="hidden">
-                        </label>
-                        <p id="filename-yara" class="mt-2 text-sm font-medium text-green-400"></p>
-                    </div>
-                    <button id="scan-btn-yara" class="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition">스캔 실행</button>
-                </div>
-
-                <div id="result-yara" class="mt-4"></div>
             </div>
         </main>
     </div>
 
-    <!-- THIS SCRIPT TAG IS THE KEY TO MAKING THE BUTTONS WORK -->
     <script src="script.js" defer></script>
 </body>
 </html>
-
