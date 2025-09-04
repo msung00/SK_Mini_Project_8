@@ -2,13 +2,12 @@
 
 let customYaraRules = {}; // 커스텀 룰을 저장하는 객체 (누적)
 
-// [업데이트] 내장 YARA 룰 원본 (수정 용이성을 위해 단순 문자열 배열 유지)
 const rawInternalYaraRules = {
     'Suspicious_VBA_Macro_Keywords': {
         description: "악성 VBA 매크로에서 자주 사용되는 키워드를 탐지합니다.",
         author: "Scenario-Based",
         strings: ["Auto_Open", "Workbook_Open", "CreateObject", "WScript.Shell", "powershell.exe", "Run", "Shell", "WinHttpRequest", "Download", "Admin", "UAC"],
-        condition: "2" // 2개 이상 일치 시
+        condition: "2"
     },
     'PowerShell_Training_Scenario_Detection': {
         description: "훈련용 PowerShell 스크립트(1~6)에서 발견되는 특정 행위를 탐지합니다. (shell_detect_rule.yar 기반)",
@@ -24,11 +23,10 @@ const rawInternalYaraRules = {
         description: "파일 헤더에서 PE 파일 시그니처('MZ', 'PE')를 탐지합니다. (pe_detect_rule.yar 기반)",
         author: "Rule-Based",
         strings: ["MZ", "PE"],
-        condition: "all" // 두 문자열이 모두 존재해야 탐지
+        condition: "all"
     }
 };
 
-// [FIX] 내장 룰을 파서가 사용하는 표준 형식으로 변환하는 함수
 function processInternalRules(rawRules) {
     const processedRules = {};
     for (const ruleName in rawRules) {
@@ -46,11 +44,8 @@ function processInternalRules(rawRules) {
     return processedRules;
 }
 
-// 변환된 내장 룰을 전역 변수로 사용
 const internalYaraRules = processInternalRules(rawInternalYaraRules);
 
-
-// ArrayBuffer를 CryptoJS WordArray로 변환
 function arrayBufferToWordArray(ab) {
     const i8a = new Uint8Array(ab);
     const a = [];
@@ -60,7 +55,6 @@ function arrayBufferToWordArray(ab) {
     return CryptoJS.lib.WordArray.create(a, i8a.length);
 }
 
-// 해시 계산
 async function calculateHashes(fileData) {
     const wordArray = arrayBufferToWordArray(fileData);
     const md5 = CryptoJS.MD5(wordArray).toString();
@@ -69,7 +63,6 @@ async function calculateHashes(fileData) {
     return { md5, sha1, sha256 };
 }
 
-// PE 파일 분석 (시나리오 기반 강화)
 function analyzePeFile(fileName, fileBuffer) {
     const analysis = {
         'Type': 'PE (Portable Executable)',
@@ -90,7 +83,6 @@ function analyzePeFile(fileName, fileBuffer) {
     return analysis;
 }
 
-// 스크립트/텍스트 파일 분석 (시나리오 기반 강화)
 function analyzeScriptFile(fileContent, fileName, fileBuffer) {
     const analysis = {};
     const extension = fileName.split('.').pop().toUpperCase();
@@ -132,7 +124,6 @@ function analyzeScriptFile(fileContent, fileName, fileBuffer) {
     return analysis;
 }
 
-// XLSM 파일 분석 (시나리오 기반 강화)
 function analyzeXlsmFile(fileContent, fileBuffer) {
     const keywords = ["Auto_Open", "Workbook_Open", "CreateObject", "WScript.Shell", "powershell.exe", "Run", "Shell", "WinHttpRequest"];
     const foundKeywords = keywords.filter(kw => fileContent.toLowerCase().includes(kw.toLowerCase()));
@@ -155,8 +146,6 @@ function analyzeXlsmFile(fileContent, fileBuffer) {
     return analysis;
 }
 
-
-// 바이트 배열 검색 헬퍼 함수
 function searchForBytes(buffer, sequence) {
     if (sequence.length === 0) return true;
     for (let i = 0; i <= buffer.length - sequence.length; i++) {
@@ -172,7 +161,6 @@ function searchForBytes(buffer, sequence) {
     return false;
 }
 
-// YARA 스캔 로직 (바이너리/텍스트 동시 지원)
 function yaraScan(textContent, fileBuffer) {
     const rulesToUse = { ...internalYaraRules, ...customYaraRules };
     const fileBytes = new Uint8Array(fileBuffer);
@@ -182,13 +170,12 @@ function yaraScan(textContent, fileBuffer) {
         const rule = rulesToUse[ruleName];
         let matchedStrings = [];
 
-        // 스캐너가 처리할 수 있는 문자열이 있는 규칙만 검사
         if (rule.strings && rule.strings.length > 0) {
             rule.strings.forEach(strObj => {
                 let isMatch = false;
                 if (strObj.type === 'hex') {
                     isMatch = searchForBytes(fileBytes, strObj.value);
-                } else { // type === 'text'
+                } else {
                     if (ruleName.toLowerCase().includes('pe')) {
                         isMatch = textContent.includes(strObj.value);
                     } else {
@@ -228,39 +215,30 @@ function yaraScan(textContent, fileBuffer) {
     return matches;
 }
 
-
-// [수정] YARA 룰 파서 (import, 주석 처리, 구문 안정성 강화)
 function parseYaraRule(ruleContent) {
     const rules = {};
-    // [FIX] 1. import 문 제거
     let cleanContent = ruleContent.replace(/import\s+"[^"]+"/g, "");
-    // [FIX] 2. 주석 제거 (블록 주석, 라인 주석 모두)
     cleanContent = cleanContent.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\r\n]*/g, "");
 
-    // global, private 키워드를 허용하도록 정규식 개선
     const ruleRegex = /(?:global\s+|private\s+)?rule\s+([\w_]+)\s*\{([\s\S]*?)\}/g;
     let match;
 
     while ((match = ruleRegex.exec(cleanContent)) !== null) {
         const ruleName = match[1];
         let ruleBody = match[2];
-
-        // 작은따옴표, 큰따옴표 모두 허용
         const metaDescMatch = ruleBody.match(/description\s*=\s*["']([^"']*)["']/);
         const stringsMatch = ruleBody.match(/strings:\s*([\s\S]*?)condition:/);
         const conditionMatch = ruleBody.match(/condition:\s*([\s\S]*?)\s*$/);
         
-        // condition 블록만 있어도 유효한 룰로 인식
         if (conditionMatch) {
             const strings = [];
             if (stringsMatch) {
-                // 작은따옴표, 큰따옴표 모두 허용하도록 정규식 개선
                 const stringRegex = /(\$[\w\d_]+)\s*=\s*(?:(["'])(.*?)\2|\{\s*([A-Fa-f0-9\s]+)\s*\})(?:\s*nocase)?/g;
                 let stringMatch;
                 while ((stringMatch = stringRegex.exec(stringsMatch[1])) !== null) {
                     const identifier = stringMatch[1];
-                    const textValue = stringMatch[3]; // 그룹 인덱스 변경됨
-                    const hexValue = stringMatch[4];  // 그룹 인덱스 변경됨
+                    const textValue = stringMatch[3];
+                    const hexValue = stringMatch[4];
 
                     if (textValue !== undefined) {
                         strings.push({ type: 'text', value: textValue, identifier: identifier, display: `"${textValue}"` });
@@ -295,7 +273,6 @@ function parseYaraRule(ruleContent) {
     return Object.keys(rules).length > 0 ? rules : null;
 }
 
-
 // --- UI 렌더링 함수 ---
 
 function createHashResultHTML(hashes) {
@@ -307,7 +284,6 @@ function createHashResultHTML(hashes) {
     `;
 }
 
-// [신규] 종합 시나리오 분석을 위한 상세 결과 HTML 렌더링 함수
 function createDetailedAnalysisHTML(analysis) {
     let html = '';
     const riskKeys = ['취약점 분석', '예상 악성 행위'];
@@ -346,8 +322,6 @@ function createDetailedAnalysisHTML(analysis) {
     return html;
 }
 
-
-// 개별 파일 분석을 위한 기본 결과 HTML 렌더링 함수
 function createAnalysisResultHTML(analysis) {
     let html = '';
     for (const key in analysis) {
@@ -376,7 +350,6 @@ function createAnalysisResultHTML(analysis) {
     }
     return html;
 }
-
 
 // --- 메인 로직 및 이벤트 핸들러 ---
 
@@ -414,13 +387,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('scan-btn-yara').addEventListener('click', handleYaraScan);
 
-    // [신규] YARA 룰셋 초기화 버튼 이벤트 리스너
     document.getElementById('reset-yara-rules').addEventListener('click', () => {
-        customYaraRules = {}; // 추가된 모든 커스텀 룰 삭제
+        customYaraRules = {};
         const filenameDisplay = document.getElementById('filename-yar');
         const yaraStatus = document.getElementById('yara-source-name');
         
-        // NEW: Hide custom rule display
         const customRuleDisplay = document.getElementById('custom-rule-display');
         const customRuleContent = document.getElementById('custom-rule-content');
         customRuleDisplay.classList.add('hidden');
@@ -473,7 +444,6 @@ function setupFileHandler(id, callback, resultEl) {
     });
 }
 
-// [수정] 뷰에 따라 다른 렌더링 함수를 사용하도록 핸들러 업데이트
 async function handleFileAnalysis(file, fileBuffer, resultEl) {
     const filenameDisplay = resultEl.previousElementSibling.querySelector('p[id^="filename-"]');
     filenameDisplay.textContent = `'${file.name}' 파일 분석 중...`;
@@ -509,8 +479,18 @@ async function handleFileAnalysis(file, fileBuffer, resultEl) {
             <h3 class="text-xl font-semibold mt-6 mb-4">🔬 상세 분석 결과</h3>`;
         analysisHTML += createAnalysisResultHTML(analysis);
         resultEl.innerHTML = analysisHTML;
+
+        const existingButton = document.getElementById('pdf-export-btn');
+        if (existingButton) existingButton.remove();
+        
+        const pdfButton = document.createElement('button');
+        pdfButton.id = 'pdf-export-btn';
+        pdfButton.className = 'mt-6 w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition flex items-center justify-center';
+        pdfButton.innerHTML = `<i data-lucide="file-down" class="w-4 h-4 mr-2"></i> 분석 결과 PDF로 저장`;
+        pdfButton.onclick = () => generatePdf(file.name);
+        resultEl.appendChild(pdfButton);
+
     } else {
-        // 종합 시나리오 분석 뷰
         resultEl.innerHTML = createHashResultHTML(hashes) + createDetailedAnalysisHTML(analysis);
     }
 
@@ -518,29 +498,23 @@ async function handleFileAnalysis(file, fileBuffer, resultEl) {
     lucide.createIcons();
 }
 
-// [수정] YARA 룰을 교체하는 대신 추가(병합)하고, 지원되지 않는 룰에 대한 안내 추가
 function handleYaraRuleFile(file, fileBuffer) {
     const filenameDisplay = document.getElementById('filename-yar');
     const yaraStatus = document.getElementById('yara-source-name');
-
-    // NEW: Get display elements
     const customRuleDisplay = document.getElementById('custom-rule-display');
     const customRuleContent = document.getElementById('custom-rule-content');
 
     filenameDisplay.textContent = `룰 파일 '${file.name}' 처리 중...`;
-    // [FIX] BOM (Byte Order Mark) 등 인코딩 문제를 방지하기 위해 ignoreBOM 옵션 추가
     const textContent = new TextDecoder("utf-8", { ignoreBOM: true }).decode(fileBuffer);
     
-    // [NEW] 1. Display the raw content first for user feedback
     customRuleContent.textContent = textContent;
     customRuleDisplay.classList.remove('hidden');
 
     const parsedRules = parseYaraRule(textContent);
 
     if (parsedRules) {
-        Object.assign(customYaraRules, parsedRules); // 기존 룰셋에 새로운 룰 병합
+        Object.assign(customYaraRules, parsedRules);
         const totalAdded = Object.keys(parsedRules).length;
-        // 스캐너가 실제로 사용할 수 있는 (strings가 있는) 룰의 개수 확인
         const scannableAdded = Object.values(parsedRules).filter(r => r.strings && r.strings.length > 0).length;
 
         let message = `'${file.name}'에서 ${totalAdded}개의 룰을 인식했습니다.`;
@@ -558,7 +532,6 @@ function handleYaraRuleFile(file, fileBuffer) {
     updateYaraAccordion();
 }
 
-
 function handleYaraScan() {
     const fileInput = document.getElementById('file-yara-target');
     const resultEl = document.getElementById('result-yara');
@@ -573,11 +546,11 @@ function handleYaraScan() {
         const textContent = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true }).decode(fileBuffer);
         const matches = yaraScan(textContent, fileBuffer);
 
-        let resultHTML = `<h3 class="text-xl font-semibold mb-4">📊 YARA 스캔 결과 (${file.name})</h3>`;
+        let resultHTML = `<div class="bg-gray-800 rounded-lg p-6"><h3 class="text-xl font-semibold mb-4">📊 YARA 스캔 결과 (${file.name})</h3>`;
         if (matches.length > 0) {
             resultHTML += `<div class="p-4 bg-red-900/50 border border-red-700 rounded-lg text-red-300 mb-4"><strong><i data-lucide="shield-alert" class="inline w-5 h-5 mr-1"></i>탐지됨!</strong> - ${matches.length}개 규칙과 일치합니다:</div>`;
             matches.forEach(match => {
-                resultHTML += `<div class="bg-gray-800 rounded-lg p-4 mb-3">
+                resultHTML += `<div class="bg-gray-700 rounded-lg p-4 mb-3">
                     <p class="font-bold text-lg text-red-400">${match.rule}</p>
                     <p class="text-sm text-gray-400 mb-2">${match.meta.description}</p>
                     <div class="font-mono text-xs bg-gray-900 p-2 rounded">
@@ -587,13 +560,13 @@ function handleYaraScan() {
         } else {
             resultHTML += `<div class="p-4 bg-green-900/50 border border-green-700 rounded-lg text-green-300"><strong><i data-lucide="shield-check" class="inline w-5 h-5 mr-1"></i>탐지되지 않음</strong> - 적용된 YARA 룰과 일치하는 패턴을 찾지 못했습니다.</div>`;
         }
+        resultHTML += `</div>`;
         resultEl.innerHTML = resultHTML;
         lucide.createIcons();
     };
     reader.readAsArrayBuffer(file);
 }
 
-// [수정] 항상 병합된 룰셋을 보여주도록 수정
 function updateYaraAccordion() {
     const yaraAccordion = document.getElementById('yara-rules-accordion');
     yaraAccordion.innerHTML = '';
@@ -633,6 +606,59 @@ function toggleAccordion(e) {
             content.style.maxHeight = content.scrollHeight + "px";
             icon.style.transform = 'rotate(180deg)';
         }
+    }
+}
+
+async function generatePdf(fileName) {
+    const { jsPDF } = window.jspdf;
+    const reportElement = document.getElementById('result-single');
+    const pdfButton = document.getElementById('pdf-export-btn');
+
+    if (!reportElement || reportElement.children.length === 0) {
+        alert("PDF로 내보낼 분석 결과가 없습니다.");
+        return;
+    }
+
+    pdfButton.textContent = 'PDF 생성 중...';
+    pdfButton.disabled = true;
+
+    try {
+        const canvas = await html2canvas(reportElement, {
+            scale: 2,
+            backgroundColor: '#1f2937',
+            useCORS: true 
+        });
+
+        const imgData = canvas.toDataURL('image/png');
+        const pdf = new jsPDF('p', 'mm', 'a4');
+        const pdfWidth = pdf.internal.pageSize.getWidth();
+        const pdfHeight = pdf.internal.pageSize.getHeight();
+        const imgProps = pdf.getImageProperties(imgData);
+        const ratio = imgProps.height / imgProps.width;
+        
+        let imgHeight = pdfWidth * ratio;
+        let heightLeft = imgHeight;
+        let position = 0;
+
+        pdf.addImage(imgData, 'PNG', 10, 10, pdfWidth - 20, imgHeight > pdfHeight - 20 ? pdfHeight - 20 : imgHeight);
+        heightLeft -= (pdfHeight - 20);
+
+        while (heightLeft > 0) {
+            position -= (pdfHeight - 20);
+            pdf.addPage();
+            pdf.addImage(imgData, 'PNG', 10, position, pdfWidth - 20, imgHeight);
+            heightLeft -= (pdfHeight - 20);
+        }
+
+        pdf.save(`analysis_report_${fileName}.pdf`);
+
+    } catch (error) {
+        console.error("PDF 생성 중 오류 발생:", error);
+        alert("PDF를 생성하는 데 실패했습니다. 콘솔을 확인해주세요.");
+    } finally {
+        pdfButton.innerHTML = `<i data-lucide="file-down" class="w-4 h-4 mr-2"></i> 분석 결과 PDF로 저장`;
+        pdfButton.disabled = false;
+        lucide.createIcons();
     }
 }
 
